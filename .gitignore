@@ -1,0 +1,8 @@
+*.csv
+*.pyc
+__pycache__/
+/nlp_env/
+/bert-results/
+/bert-results_32/
+.ipynb_checkpoints/
+
