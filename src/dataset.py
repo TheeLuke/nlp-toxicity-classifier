@@ -23,21 +23,50 @@ class CharTokenizer:
     def get_vocab_size(self):
         return len(self.char2idx)
 
-def augment_text(text, prob=0.3):
-    """Simulates gamer typos (spacing, deletions, swaps)."""
+def augment_text(text, prob=0.5):
+    """
+    Simulates 'gamer typos' AND 'leet speak' to fix stress test failures.
+    """
     if random.random() > prob:
         return text
     
     chars = list(text)
+    # New: Leet Speak Mapping
+    leet_map = {
+        'a': ['@', '4', 'A'],
+        'e': ['3', 'E'],
+        'i': ['1', '!', '|'],
+        'o': ['0', 'O'],
+        's': ['$', '5', 'z'],
+        't': ['7', '+'],
+        'u': ['v', 'U'],
+        'c': ['(', '<'],
+        'k': ['|{', 'K']
+    }
+    
+    aug_type = random.choice(['space', 'del', 'swap', 'leet', 'leet']) # Higher weight on leet
+    
     try:
-        aug_type = random.choice(['space', 'del', 'swap'])
         if aug_type == 'space' and len(chars) > 1:
             chars.insert(random.randint(1, len(chars)-1), ' ')
+            
         elif aug_type == 'del' and len(chars) > 1:
             del chars[random.randint(0, len(chars)-1)]
-        elif aug == 'swap' and len(chars) > 1:
+            
+        elif aug_type == 'swap' and len(chars) > 1:
             i = random.randint(0, len(chars)-2)
             chars[i], chars[i+1] = chars[i+1], chars[i]
+            
+        elif aug_type == 'leet':
+            # Find characters that can be substituted
+            candidates = [i for i, c in enumerate(chars) if c.lower() in leet_map]
+            if candidates:
+                # Pick a random character to substitute
+                idx = random.choice(candidates)
+                char_lower = chars[idx].lower()
+                # Replace with a random leet alternative
+                chars[idx] = random.choice(leet_map[char_lower])
+                
     except:
         pass 
     return "".join(chars)
