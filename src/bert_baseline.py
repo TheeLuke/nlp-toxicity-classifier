@@ -1,6 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
-from transformers import BertTokenizer, BertForSequenceClassification, AdamW, get_linear_schedule_with_warmup
+from torch.optim import AdamW
+from transformers import BertTokenizer, BertForSequenceClassification, get_linear_schedule_with_warmup
 import os
 import time
 

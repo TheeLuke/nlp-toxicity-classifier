@@ -1,63 +1,136 @@
+import torch
+from torch.utils.data import DataLoader
+from torch.optim import AdamW
+from transformers import BertTokenizer, BertForSequenceClassification, get_linear_schedule_with_warmup
 import os
-import joblib
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import Pipeline
+import time
 
+try:
+    from dataset_loader import CONDADataset
+except ImportError:
+    pass
 
-from dataset_loader import CONDADataset 
-
-def train_tfidf_baseline(train_path, val_path, save_dir='saved_models'):
+def train_bert_baseline(train_path, val_path, save_dir='saved_models', epochs=4, batch_size=16):
     """
-    Trains a TF-IDF + Logistic Regression pipeline and saves it.
+    Fine-tunes BERT on the CONDA dataset and saves the best performing model.
+    """
     
-    Args:
-        train_path (str): Path to CONDA train CSV.
-        val_path (str): Path to CONDA validation CSV.
-        save_dir (str): Directory to save the trained model.
-    """
+    # --- 1. Setup & Configuration ---
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    print(f"Using device: {device}")
+    
     os.makedirs(save_dir, exist_ok=True)
     
-    print("--- Loading Data for TF-IDF ---")
-    # We use model_type='tfidf' so the dataset returns raw text strings
-    # We enable use_context=True to give this baseline the best chance of competing
-    train_dataset = CONDADataset(train_path, model_type='tfidf', use_context=True)
-    
-    # Extract lists of text and labels directly from the dataset object
-    X_train = train_dataset.texts
-    y_train = train_dataset.labels
-    
-    print(f"Training data loaded: {len(X_train)} samples")
+    # Initialize Tokenizer
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
-    # --- Build Pipeline ---
-    # Per your Midterm Report , we use 20,000 features
-    print("--- Building TF-IDF + LR Pipeline ---")
-    pipeline = Pipeline([
-        ('tfidf', TfidfVectorizer(
-            max_features=20000, 
-            ngram_range=(1, 2),  # Unigrams and Bigrams catch phrases like "gg ez"
-            stop_words='english' # Optional: Remove if "u", "ur" are important, but standard for baselines
-        )),
-        ('clf', LogisticRegression(
-            solver='liblinear',  # Good for binary classification
-            C=1.0,               # Default regularization
-            max_iter=1000        # Ensure convergence
-        ))
-    ])
+    # --- 2. Load Data ---
+    print("--- Loading Data for BERT ---")
     
-    # --- Train ---
-    print("--- Training Model ---")
-    pipeline.fit(X_train, y_train)
+    # Enable use_context=True to capture conversation history
+    train_dataset = CONDADataset(train_path, model_type='bert', tokenizer=tokenizer, use_context=True)
+    val_dataset = CONDADataset(val_path, model_type='bert', tokenizer=tokenizer, use_context=True)
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+    # --- 3. Initialize Model ---
+    print("--- Initializing BERT Model ---")
+    model = BertForSequenceClassification.from_pretrained(
+        'bert-base-uncased',
+        num_labels=2, # Binary: Toxic (1) vs Non-Toxic (0)
+        output_attentions=False,
+        output_hidden_states=False,
+    )
+    model.to(device)
+
+    # --- 4. Optimizer & Scheduler ---
+    optimizer = AdamW(model.parameters(), lr=2e-5, eps=1e-8)
     
-    # --- Save ---
-    model_path = os.path.join(save_dir, 'tfidf_baseline.pkl')
-    joblib.dump(pipeline, model_path)
-    print(f"Model saved to: {model_path}")
-    print("TF-IDF Baseline training complete.")
+    total_steps = len(train_loader) * epochs
+    
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer, 
+        num_warmup_steps=0, 
+        num_training_steps=total_steps
+    )
+
+    # --- 5. Training Loop ---
+    print(f"--- Starting Training for {epochs} Epochs ---")
+    
+    best_val_loss = float('inf')
+    
+    for epoch_i in range(0, epochs):
+        print(f'\n======== Epoch {epoch_i + 1} / {epochs} ========')
+        t0 = time.time()
+        
+        # --- Training Phase ---
+        model.train()
+        total_train_loss = 0
+
+        for step, batch in enumerate(train_loader):
+            b_input_ids = batch['input_ids'].to(device)
+            b_input_mask = batch['attention_mask'].to(device)
+            b_labels = batch['labels'].to(device)
+
+            model.zero_grad()        
+
+            outputs = model(b_input_ids, 
+                            token_type_ids=None, 
+                            attention_mask=b_input_mask, 
+                            labels=b_labels)
+            
+            loss = outputs.loss
+            total_train_loss += loss.item()
+
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            scheduler.step()
+
+            if step % 100 == 0 and not step == 0:
+                print(f'  Batch {step}  of  {len(train_loader)}.  Loss: {loss.item():.3f}')
+
+        avg_train_loss = total_train_loss / len(train_loader)
+        print(f"  Average training loss: {avg_train_loss:.3f}")
+
+        # --- Validation Phase ---
+        print("  Running Validation...")
+        model.eval()
+        total_eval_loss = 0
+
+        for batch in val_loader:
+            b_input_ids = batch['input_ids'].to(device)
+            b_input_mask = batch['attention_mask'].to(device)
+            b_labels = batch['labels'].to(device)
+
+            with torch.no_grad():        
+                outputs = model(b_input_ids, 
+                                token_type_ids=None, 
+                                attention_mask=b_input_mask, 
+                                labels=b_labels)
+                
+            loss = outputs.loss
+            total_eval_loss += loss.item()
+
+        avg_val_loss = total_eval_loss / len(val_loader)
+        print(f"  Validation Loss: {avg_val_loss:.3f}")
+
+        # --- Checkpointing ---
+        if avg_val_loss < best_val_loss:
+            print(f"  Validation Loss Improved ({best_val_loss:.3f} -> {avg_val_loss:.3f}). Saving model...")
+            best_val_loss = avg_val_loss
+            
+            save_path = os.path.join(save_dir, 'bert_baseline_best')
+            model.save_pretrained(save_path)
+            tokenizer.save_pretrained(save_path)
+        else:
+            print("  Validation Loss did not improve.")
+
+    print("\nTraining complete.")
 
 if __name__ == "__main__":
-    # Update these paths to match your actual file locations
     TRAIN_FILE = 'conda_train.csv' 
     VAL_FILE = 'conda_valid.csv'
     
-    train_tfidf_baseline(TRAIN_FILE, VAL_FILE)
+    train_bert_baseline(TRAIN_FILE, VAL_FILE)
