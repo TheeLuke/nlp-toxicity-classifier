@@ -4,9 +4,7 @@ from transformers import BertTokenizer, BertForSequenceClassification, AdamW, ge
 import os
 import time
 
-# Import your dataset class
-# Assuming the data loader code is in 'data_loader.py'
-# from data_loader import CONDADataset 
+from dataset_loader import CONDADataset 
 
 def train_bert_baseline(train_path, val_path, save_dir='saved_models', epochs=4, batch_size=16):
     """

@@ -4,9 +4,8 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 
-# Import your dataset class
-# Assuming the previous code is saved in a file named 'data_loader.py'
-# from data_loader import CONDADataset 
+
+from dataset_loader import CONDADataset 
 
 def train_tfidf_baseline(train_path, val_path, save_dir='saved_models'):
     """
